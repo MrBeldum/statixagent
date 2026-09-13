@@ -2,7 +2,10 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"hash/crc32"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,7 +58,7 @@ func updateKeyboard() telegram.Keyboard {
 
 // alertKeyboard maps an alert to one-tap context actions: the alert message
 // itself becomes the relevant view when a button is pressed.
-func alertKeyboard(key string) telegram.Keyboard {
+func (a *Agent) alertKeyboard(key string) telegram.Keyboard {
 	prefix, _, _ := strings.Cut(key, ":")
 	var row []telegram.Button
 	switch prefix {
@@ -90,7 +93,7 @@ func alertKeyboard(key string) telegram.Keyboard {
 	default:
 		row = []telegram.Button{{Text: "📊 Status", Data: "status"}}
 	}
-	row = append(row, telegram.Button{Text: "🔕 1h", Data: "snz:" + key})
+	row = append(row, telegram.Button{Text: "🔕 1h", Data: a.snoozeCallbackData(key)})
 	return telegram.Keyboard{row}
 }
 
@@ -98,7 +101,7 @@ func alertKeyboard(key string) telegram.Keyboard {
 func (a *Agent) pushAlert(ctx context.Context, al alert.Alert) {
 	a.noteAlert(al)
 	html := bot.AlertMsg(a.src.Hostname, al)
-	if _, err := a.send.SendMessageKB(ctx, a.cfg.Telegram.ChatID, html, alertKeyboard(al.Key)); err != nil {
+	if _, err := a.send.SendMessageKB(ctx, a.cfg.Telegram.ChatID, html, a.alertKeyboard(al.Key)); err != nil {
 		log.Printf("agent: alert push failed: %v", err)
 	}
 }
@@ -146,9 +149,13 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	if cb.ChatID != a.cfg.Telegram.ChatID {
 		return // foreign chat: ignore entirely, do not even answer
 	}
-	if key, ok := strings.CutPrefix(cb.Data, "snz:"); ok {
+	if key, ok := a.resolveSnoozeKey(cb.Data); ok {
 		a.engine.Snooze(key, time.Now().Add(time.Hour))
 		a.send.AnswerCallback(ctx, cb.ID, "Snoozed for 1h")
+		return
+	}
+	if strings.HasPrefix(cb.Data, "snz:") {
+		a.send.AnswerCallback(ctx, cb.ID, "stale snooze")
 		return
 	}
 	switch cb.Data {
@@ -220,4 +227,29 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	if err := a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, reply, kb); err != nil {
 		log.Printf("agent: edit: %v", err)
 	}
+}
+
+// snoozeCallbackData stores key under its crc32 and returns snz:<8 hex>,
+// which always fits Telegram's 64-byte callback_data limit.
+func (a *Agent) snoozeCallbackData(key string) string {
+	h := crc32.ChecksumIEEE([]byte(key))
+	a.mu.Lock()
+	a.snoozeKeys[h] = key
+	a.mu.Unlock()
+	return fmt.Sprintf("snz:%08x", h)
+}
+
+func (a *Agent) resolveSnoozeKey(data string) (string, bool) {
+	hex, ok := strings.CutPrefix(data, "snz:")
+	if !ok {
+		return "", false
+	}
+	v, err := strconv.ParseUint(hex, 16, 32)
+	if err != nil || len(hex) != 8 {
+		return "", false
+	}
+	a.mu.Lock()
+	key, ok := a.snoozeKeys[uint32(v)]
+	a.mu.Unlock()
+	return key, ok
 }

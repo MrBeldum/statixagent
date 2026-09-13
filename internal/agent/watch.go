@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"hash/crc32"
 	"log"
 	"slices"
 	"sort"
@@ -498,11 +499,11 @@ func (a *Agent) watchingView() (string, telegram.Keyboard) {
 		// the same way HTTP URLs do (hr:<i>).
 		for i, s := range w.Services {
 			fmt.Fprintf(&b, " 🧩 %s\n", esc(s))
-			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(strings.TrimSuffix(s, ".service"), 20), Data: fmt.Sprintf("sr:%d", i)}})
+			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(strings.TrimSuffix(s, ".service"), 20), Data: watchIndexData("sr:", i, s)}})
 		}
 		for i, p := range w.Processes {
 			fmt.Fprintf(&b, " ⚙ %s\n", esc(p))
-			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(p, 20), Data: fmt.Sprintf("xr:%d", i)}})
+			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(p, 20), Data: watchIndexData("xr:", i, p)}})
 		}
 		for _, p := range w.Ports {
 			label := ""
@@ -514,11 +515,11 @@ func (a *Agent) watchingView() (string, telegram.Keyboard) {
 		}
 		for i, h := range w.SSLHosts {
 			fmt.Fprintf(&b, " 🔒 %s\n", esc(h))
-			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(h, 20), Data: fmt.Sprintf("cr:%d", i)}})
+			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(h, 20), Data: watchIndexData("cr:", i, h)}})
 		}
 		for i, h := range w.HTTPChecks {
 			fmt.Fprintf(&b, " 🌐 %s\n", esc(truncate(h.URL, 34)))
-			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(h.URL, 20), Data: fmt.Sprintf("hr:%d", i)}})
+			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(h.URL, 20), Data: watchIndexData("hr:", i, h.URL)}})
 		}
 		b.WriteString("</pre>")
 	}
@@ -588,45 +589,45 @@ func (a *Agent) handleWatchCallback(ctx context.Context, data string) (string, t
 		return text, kb, fmt.Sprintf("✅ watching port %d", port), true
 
 	case strings.HasPrefix(data, "sr:"):
-		i, err := strconv.Atoi(strings.TrimPrefix(data, "sr:"))
+		i, fp, ok := parseWatchIndexData(data, "sr:")
 		services := a.watchCopy().Services
-		if err != nil || i < 0 || i >= len(services) {
+		name, ok := matchWatchItem(services, i, fp, ok)
+		if !ok {
 			text, kb := a.watchingView()
 			return text, kb, "stale list", true
 		}
-		name := services[i]
 		a.mutateWatch(func(w *config.Watch) { w.Services = remove(w.Services, name) })
 		text, kb := a.watchingView()
 		return text, kb, "🗑 " + name, true
 
 	case strings.HasPrefix(data, "xr:"):
-		i, err := strconv.Atoi(strings.TrimPrefix(data, "xr:"))
+		i, fp, ok := parseWatchIndexData(data, "xr:")
 		procs := a.watchCopy().Processes
-		if err != nil || i < 0 || i >= len(procs) {
+		name, ok := matchWatchItem(procs, i, fp, ok)
+		if !ok {
 			text, kb := a.watchingView()
 			return text, kb, "stale list", true
 		}
-		name := procs[i]
 		a.mutateWatch(func(w *config.Watch) { w.Processes = remove(w.Processes, name) })
 		text, kb := a.watchingView()
 		return text, kb, "🗑 " + name, true
 
 	case strings.HasPrefix(data, "cr:"):
-		i, err := strconv.Atoi(strings.TrimPrefix(data, "cr:"))
+		i, fp, ok := parseWatchIndexData(data, "cr:")
 		hosts := a.watchCopy().SSLHosts
-		if err != nil || i < 0 || i >= len(hosts) {
+		host, ok := matchWatchItem(hosts, i, fp, ok)
+		if !ok {
 			text, kb := a.watchingView()
 			return text, kb, "stale list", true
 		}
-		host := hosts[i]
 		a.mutateWatch(func(w *config.Watch) { w.SSLHosts = remove(w.SSLHosts, host) })
 		text, kb := a.watchingView()
 		return text, kb, "🗑 " + host, true
 
 	case strings.HasPrefix(data, "hr:"):
-		i, err := strconv.Atoi(strings.TrimPrefix(data, "hr:"))
+		i, fp, ok := parseWatchIndexData(data, "hr:")
 		checks := a.watchCopy().HTTPChecks
-		if err != nil || i < 0 || i >= len(checks) {
+		if !ok || i < 0 || i >= len(checks) || crc32.ChecksumIEEE([]byte(checks[i].URL)) != fp {
 			text, kb := a.watchingView()
 			return text, kb, "stale list", true
 		}
@@ -661,4 +662,40 @@ func (a *Agent) handleWatchCallback(ctx context.Context, data string) (string, t
 		return text, kb, fmt.Sprintf("🗑 port %d", port), true
 	}
 	return "", nil, "", false
+}
+
+// watchIndexData binds a list index to a short fingerprint of the item so a
+// stale /watching keyboard cannot remove a different entry after the list shifts.
+func watchIndexData(prefix string, i int, item string) string {
+	return fmt.Sprintf("%s%d:%08x", prefix, i, crc32.ChecksumIEEE([]byte(item)))
+}
+
+func parseWatchIndexData(data, prefix string) (int, uint32, bool) {
+	rest, ok := strings.CutPrefix(data, prefix)
+	if !ok {
+		return 0, 0, false
+	}
+	idxStr, fpStr, ok := strings.Cut(rest, ":")
+	if !ok {
+		return 0, 0, false
+	}
+	i, err := strconv.Atoi(idxStr)
+	if err != nil {
+		return 0, 0, false
+	}
+	fp, err := strconv.ParseUint(fpStr, 16, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	return i, uint32(fp), true
+}
+
+func matchWatchItem(list []string, i int, fp uint32, parsed bool) (string, bool) {
+	if !parsed || i < 0 || i >= len(list) {
+		return "", false
+	}
+	if crc32.ChecksumIEEE([]byte(list[i])) != fp {
+		return "", false
+	}
+	return list[i], true
 }
