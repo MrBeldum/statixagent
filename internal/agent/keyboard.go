@@ -229,20 +229,28 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	}
 }
 
-// snoozeCallbackData stores key under its crc32 and returns snz:<8 hex>,
-// which always fits Telegram's 64-byte callback_data limit.
+// snoozeCallbackData keeps ordinary alert keys in callback_data so buttons
+// remain valid across restarts. Only oversized keys use the in-memory hash map.
 func (a *Agent) snoozeCallbackData(key string) string {
+	direct := "snz:" + key
+	if len(direct) <= 64 {
+		return direct
+	}
 	h := crc32.ChecksumIEEE([]byte(key))
 	a.mu.Lock()
 	a.snoozeKeys[h] = key
 	a.mu.Unlock()
-	return fmt.Sprintf("snz:%08x", h)
+	return fmt.Sprintf("snz:h%08x", h)
 }
 
 func (a *Agent) resolveSnoozeKey(data string) (string, bool) {
-	hex, ok := strings.CutPrefix(data, "snz:")
+	value, ok := strings.CutPrefix(data, "snz:")
 	if !ok {
 		return "", false
+	}
+	hex, hashed := strings.CutPrefix(value, "h")
+	if !hashed {
+		return value, value != ""
 	}
 	v, err := strconv.ParseUint(hex, 16, 32)
 	if err != nil || len(hex) != 8 {

@@ -44,6 +44,24 @@ func TestSnoozeCallback(t *testing.T) {
 	}
 }
 
+func TestSnoozeShortKeySurvivesRestart(t *testing.T) {
+	before := testAgent(&fakeSender{})
+	data := before.snoozeCallbackData("docker:api")
+	if data != "snz:docker:api" {
+		t.Fatalf("short snooze callback = %q", data)
+	}
+
+	// A fresh agent has no hash map entries, just as after a restart.
+	send := &fakeSender{}
+	after := testAgent(send)
+	after.handleCallback(context.Background(), &telegram.Callback{
+		ID: "cb", ChatID: 42, MessageID: 1, Data: data,
+	})
+	if al := after.engine.Event("docker:api", "t", "b", alert.Warning, time.Now(), 0); al != nil {
+		t.Fatalf("short key should be snoozed after restart, got %+v", al)
+	}
+}
+
 func TestSnoozeLongKeyFitsCallbackData(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
@@ -78,7 +96,7 @@ func TestSnoozeStaleHash(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	ctx := context.Background()
-	a.handleCallback(ctx, &telegram.Callback{ID: "cb", ChatID: 42, MessageID: 1, Data: "snz:deadbeef"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "cb", ChatID: 42, MessageID: 1, Data: "snz:hdeadbeef"})
 	send.mu.Lock()
 	answered := append([]string(nil), send.answered...)
 	send.mu.Unlock()
