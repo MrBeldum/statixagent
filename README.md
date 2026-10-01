@@ -106,6 +106,15 @@ confirmation:
   confirmation screen. Hosts without `ufw` get a plain "cannot manage the
   firewall here" and no buttons, never a guess about what is open.
 
+## What it looks like
+
+`/status` on a laptop that has been up six days, and a power-loss alert from the
+moment its mains supply dropped.
+
+| `/status` | Power lost |
+| --- | --- |
+| <img src="docs/img/telegram-status.jpg" alt="/status output in Telegram: CPU, RAM, disks, interfaces, temperature, battery, process count and load, followed by the inline keyboard" width="320"> | <img src="docs/img/telegram-power-lost.jpg" alt="Telegram alert reading Power lost, running on battery, 79 percent, about four hours left, with Power, Status and snooze buttons" width="320"> |
+
 ## Telegram commands
 
 Commands are registered for autocomplete, and every metric view carries an
