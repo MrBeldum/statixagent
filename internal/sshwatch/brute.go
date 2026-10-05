@@ -9,13 +9,18 @@ import (
 // Window. Each IP alerts once per quiet period: after firing, it must fall
 // silent for a full Window before it can fire again, preventing alert spam
 // during an ongoing attack.
+//
+// State is kept only for IPs seen within the last Window or so: an
+// internet-facing sshd sees thousands of distinct scanner IPs a day, and the
+// agent runs for months under a small memory ceiling.
 type BruteDetector struct {
 	Window    time.Duration
 	Threshold int
 
-	mu       sync.Mutex
-	attempts map[string][]time.Time
-	fired    map[string]time.Time
+	mu        sync.Mutex
+	attempts  map[string][]time.Time
+	fired     map[string]time.Time
+	lastSweep time.Time
 }
 
 // NewBruteDetector returns a detector with the given window and threshold.
@@ -32,6 +37,11 @@ func NewBruteDetector(window time.Duration, threshold int) *BruteDetector {
 func (b *BruteDetector) Record(ip string, at time.Time) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	if at.Sub(b.lastSweep) >= b.Window {
+		b.prune(at)
+		b.lastSweep = at
+	}
 
 	cutoff := at.Add(-b.Window)
 	kept := b.attempts[ip][:0]
@@ -66,4 +76,26 @@ func (b *BruteDetector) Count(ip string, now time.Time) int {
 		}
 	}
 	return n
+}
+
+// prune forgets every IP whose newest attempt has left the window. Callers
+// hold b.mu.
+//
+// Forgetting such an IP cannot change a later decision. Its attempts would
+// be filtered out by the next Record anyway, and its fired time is never
+// later than its newest attempt, so it is outside the quiet period too:
+// the IP is free to fire again, exactly as if it had never been seen.
+func (b *BruteDetector) prune(now time.Time) {
+	cutoff := now.Add(-b.Window)
+	for ip, times := range b.attempts {
+		if len(times) == 0 || !times[len(times)-1].After(cutoff) {
+			delete(b.attempts, ip)
+			delete(b.fired, ip)
+		}
+	}
+	for ip := range b.fired {
+		if _, ok := b.attempts[ip]; !ok {
+			delete(b.fired, ip)
+		}
+	}
 }
