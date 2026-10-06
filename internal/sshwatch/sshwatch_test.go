@@ -187,6 +187,31 @@ func TestBruteDetectorForgetsIdleIPs(t *testing.T) {
 	}
 }
 
+
+func TestBruteDetectorPruneOutOfOrder(t *testing.T) {
+	b := NewBruteDetector(time.Minute, 3)
+	ip := "198.51.100.42"
+	sec := func(n int) time.Time { return t0.Add(time.Duration(n) * time.Second) }
+
+	// Seed another IP so the first Record establishes lastSweep.
+	b.Record("192.0.2.1", sec(0))
+	// Fresh attempt, then an older one appended out of order so the slice's last
+	// element is outside the upcoming sweep window while the max is still inside.
+	b.Record(ip, sec(50))
+	b.Record(ip, sec(5))
+
+	// Sweep at 70s: cutoff is 10s. Last element (5s) is outside; max (50s) is not.
+	// Using last-element prune would drop the IP; max-based prune must keep it.
+	b.Record("192.0.2.2", sec(70))
+	if b.Count(ip, sec(70)) != 1 {
+		t.Fatalf("Count after out-of-order prune = %d, want 1 (the in-window attempt)", b.Count(ip, sec(70)))
+	}
+	b.Record(ip, sec(72))
+	if !b.Record(ip, sec(74)) {
+		t.Fatal("third in-window attempt must fire; prune must not have dropped the IP")
+	}
+}
+
 func TestBruteDetectorKeepsActiveIPs(t *testing.T) {
 	b := NewBruteDetector(time.Minute, 3)
 	ip, other := "198.51.100.7", "192.0.2.1"

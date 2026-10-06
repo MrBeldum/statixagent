@@ -79,7 +79,9 @@ func (b *BruteDetector) Count(ip string, now time.Time) int {
 }
 
 // prune forgets every IP whose newest attempt has left the window. Callers
-// hold b.mu.
+// hold b.mu. Newest is the max timestamp in the slice, not the last element,
+// so out-of-order Record times cannot drop an IP that still has in-window
+// attempts.
 //
 // Forgetting such an IP cannot change a later decision. Its attempts would
 // be filtered out by the next Record anyway, and its fired time is never
@@ -88,14 +90,21 @@ func (b *BruteDetector) Count(ip string, now time.Time) int {
 func (b *BruteDetector) prune(now time.Time) {
 	cutoff := now.Add(-b.Window)
 	for ip, times := range b.attempts {
-		if len(times) == 0 || !times[len(times)-1].After(cutoff) {
+		if len(times) == 0 || !newestAttempt(times).After(cutoff) {
 			delete(b.attempts, ip)
 			delete(b.fired, ip)
 		}
 	}
-	for ip := range b.fired {
-		if _, ok := b.attempts[ip]; !ok {
-			delete(b.fired, ip)
+}
+
+// newestAttempt returns the latest timestamp in times. Record does not require
+// chronological order, so prune must not assume the last element is newest.
+func newestAttempt(times []time.Time) time.Time {
+	max := times[0]
+	for _, t := range times[1:] {
+		if t.After(max) {
+			max = t
 		}
 	}
+	return max
 }
