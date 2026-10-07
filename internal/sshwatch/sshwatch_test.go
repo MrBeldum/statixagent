@@ -187,7 +187,6 @@ func TestBruteDetectorForgetsIdleIPs(t *testing.T) {
 	}
 }
 
-
 func TestBruteDetectorPruneOutOfOrder(t *testing.T) {
 	b := NewBruteDetector(time.Minute, 3)
 	ip := "198.51.100.42"
